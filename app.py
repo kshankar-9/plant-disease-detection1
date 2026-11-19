@@ -2,11 +2,13 @@
 import streamlit as st
 import tensorflow as tf
 import numpy as np
-from PIL import Image
 
-# ---------------------------------
+from PIL import Image
+from tensorflow.keras.applications.mobilenet_v2 import decode_predictions
+
+# ==========================================
 # PAGE CONFIGURATION
-# ---------------------------------
+# ==========================================
 
 st.set_page_config(
     page_title="Plant Disease Detection",
@@ -17,30 +19,44 @@ st.set_page_config(
 st.title("🌱 Plant Disease Detection System")
 
 st.write(
-    "Upload a clear plant leaf image to identify "
-    "its condition using an AI-based machine learning model."
+    "Upload a clear plant leaf image to identify its disease "
+    "using an AI-based machine learning model."
 )
 
-# ---------------------------------
+# ==========================================
 # MODEL LOADING
-# ---------------------------------
+# ==========================================
 
 @st.cache_resource
 def load_model():
+
     return tf.keras.models.load_model(
         "plant_disease_model (2).keras",
         compile=False
     )
 
+
+@st.cache_resource
+def load_validation_model():
+
+    return tf.keras.applications.MobileNetV2(
+        weights="imagenet",
+        include_top=True
+    )
+
+
 try:
     model = load_model()
+    validation_model = load_validation_model()
+
 except Exception as e:
     st.error(f"Model loading failed: {e}")
     st.stop()
 
-# ---------------------------------
+
+# ==========================================
 # ORIGINAL 38 CLASS NAMES
-# ---------------------------------
+# ==========================================
 
 class_names = [
     "Apple___Apple_scab",
@@ -83,9 +99,22 @@ class_names = [
     "Tomato___Tomato_Yellow_Leaf_Curl_Virus"
 ]
 
-# ---------------------------------
+
+# ==========================================
+# NON-PLANT IMAGE VALIDATION
+# ==========================================
+
+NON_PLANT_LABELS = {
+    "web_site", "menu", "envelope", "comic_book",
+    "baseball", "ballplayer", "soccer_ball",
+    "dog", "cat", "car", "truck", "bus",
+    "person", "bicycle", "motorcycle", "airliner"
+}
+
+
+# ==========================================
 # DISEASE INFORMATION
-# ---------------------------------
+# ==========================================
 
 def get_disease_info(label):
 
@@ -93,23 +122,29 @@ def get_disease_info(label):
 
     condition = condition.replace("_", " ")
     condition = condition.replace(",", "")
-    condition = condition.replace("(", "").replace(")", "")
+    condition = condition.replace("(", "")
+    condition = condition.replace(")", "")
 
     if "healthy" in label.lower():
+
         information = (
             f"The model classified this {plant} leaf as healthy. "
             "No listed disease was identified as the top prediction."
         )
+
         prevention = (
             "Continue regular monitoring, proper watering, "
             "good sanitation and balanced plant nutrition."
         )
+
     else:
+
         information = (
             f"This prediction corresponds to {condition} in {plant}. "
             "The model identifies visual patterns associated with "
             "this disease. Similar symptoms can occur for other reasons."
         )
+
         prevention = (
             "Remove and dispose of affected plant material appropriately. "
             "Keep foliage dry where possible, provide good air circulation, "
@@ -119,49 +154,120 @@ def get_disease_info(label):
 
     return information, prevention
 
-# ---------------------------------
-# IMAGE PREDICTION
-# ---------------------------------
 
-def predict_disease(image):
+# ==========================================
+# FINAL PREDICTION FUNCTION
+# ==========================================
 
-    image = image.convert("RGB")
-    image = image.resize((160, 160))
+def final_predict(image):
 
-    image_array = np.array(
-        image,
-        dtype=np.float32
-    )
+    if image is None:
+        return None, "Please upload an image."
 
-    image_array = tf.keras.applications.mobilenet_v2.preprocess_input(
-        image_array
-    )
+    try:
 
-    image_array = np.expand_dims(
-        image_array,
-        axis=0
-    )
+        image = image.convert("RGB")
 
-    predictions = model.predict(
-        image_array,
-        verbose=0
-    )[0]
+        # STAGE 1: VALIDATE UPLOADED IMAGE
 
-    top_indices = np.argsort(predictions)[-3:][::-1]
+        check_image = image.resize((224, 224))
 
-    return [
-        (class_names[i], float(predictions[i]) * 100)
-        for i in top_indices
-    ]
+        arr = np.array(
+            check_image,
+            dtype=np.float32
+        )
 
-# ---------------------------------
-# IMAGE UPLOAD
-# ---------------------------------
+        arr = np.expand_dims(arr, axis=0)
+
+        arr = tf.keras.applications.mobilenet_v2.preprocess_input(
+            arr
+        )
+
+        validation_output = validation_model.predict(
+            arr,
+            verbose=0
+        )
+
+        top_results = decode_predictions(
+            validation_output,
+            top=5
+        )[0]
+
+        for _, label, score in top_results:
+
+            if label in NON_PLANT_LABELS and score >= 0.30:
+
+                return None, (
+                    "Image not found. Please upload a plant leaf image."
+                )
+
+        # STAGE 2: PLANT DISEASE PREDICTION
+
+        disease_image = image.resize((160, 160))
+
+        disease_arr = np.array(
+            disease_image,
+            dtype=np.float32
+        )
+
+        disease_arr = (
+            tf.keras.applications.mobilenet_v2.preprocess_input(
+                disease_arr
+            )
+        )
+
+        disease_arr = np.expand_dims(
+            disease_arr,
+            axis=0
+        )
+
+        predictions = model.predict(
+            disease_arr,
+            verbose=0
+        )[0]
+
+        # TOP 3 PREDICTIONS
+
+        top_indices = np.argsort(
+            predictions
+        )[-3:][::-1]
+
+        results = []
+
+        for index in top_indices:
+
+            results.append((
+                class_names[index],
+                float(predictions[index]) * 100
+            ))
+
+        confidence = results[0][1]
+
+        # CONFIDENCE VALIDATION
+
+        if confidence < 70:
+
+            return None, (
+                "Image not found or unclear. "
+                "Please upload a clear plant leaf image."
+            )
+
+        return results, None
+
+    except Exception as e:
+
+        return None, f"Prediction error: {str(e)}"
+
+
+# ==========================================
+# IMAGE UPLOAD INTERFACE
+# ==========================================
 
 uploaded_file = st.file_uploader(
     "📷 Upload Plant Leaf Image",
     type=["jpg", "jpeg", "png"]
 )
+
 
 if uploaded_file is not None:
 
@@ -173,63 +279,91 @@ if uploaded_file is not None:
         use_container_width=True
     )
 
-    if st.button("🔍 Predict Disease", type="primary"):
+    if st.button(
+        "🔍 Predict Disease",
+        type="primary"
+    ):
 
         with st.spinner("Analyzing leaf image..."):
 
-            results = predict_disease(image)
+            results, error = final_predict(image)
 
-        label, confidence = results[0]
+        if error:
 
-        plant, condition = label.split("___", 1)
+            st.error(error)
 
-        information, prevention = get_disease_info(label)
+        else:
 
-        st.success("Prediction completed!")
+            label, confidence = results[0]
 
-        st.subheader("🌿 Prediction Result")
+            plant, condition = label.split("___", 1)
 
-        st.write("**Plant:**", plant)
+            information, prevention = get_disease_info(label)
 
-        st.write(
-            "**Predicted Condition:**",
-            condition.replace("_", " ")
-        )
+            # PREDICTION RESULT
 
-        st.metric(
-            "Confidence",
-            f"{confidence:.2f}%"
-        )
+            st.success("Prediction completed!")
 
-        st.subheader("📊 Top 3 Predictions")
+            st.subheader("🌿 Prediction Result")
 
-        for name, score in results:
+            st.write("**Plant:**", plant)
 
             st.write(
-                f"**{name.replace('___', ' - ')}**"
+                "**Predicted Condition:**",
+                condition.replace("_", " ")
             )
 
-            st.progress(
-                min(max(score / 100, 0.0), 1.0)
+            st.metric(
+                "Confidence",
+                f"{confidence:.2f}%"
             )
 
-            st.caption(f"{score:.2f}%")
+            # TOP 3 PREDICTIONS
 
-        st.subheader("📖 Disease Information")
-        st.write(information)
+            st.subheader("📊 Top 3 Predictions")
 
-        st.subheader("🛡️ Prevention")
-        st.write(prevention)
+            for name, score in results:
 
-        st.warning(
-            "AI prediction, not a confirmed agricultural diagnosis. "
-            "Predictions may be unreliable for unclear images, "
-            "unseen diseases or plants outside the training classes."
-        )
+                st.write(
+                    f"**{name.replace('___', ' - ')}**"
+                )
+
+                st.progress(
+                    min(max(score / 100, 0.0), 1.0)
+                )
+
+                st.caption(
+                    f"{score:.2f}%"
+                )
+
+            # INFORMATION
+
+            st.subheader("📖 Disease Information")
+
+            st.write(information)
+
+            # PREVENTION
+
+            st.subheader("🛡️ Prevention")
+
+            st.write(prevention)
+
+            # DISCLAIMER
+
+            st.warning(
+                "AI prediction, not a confirmed agricultural diagnosis. "
+                "Predictions may be unreliable for unclear images, "
+                "unseen diseases or plants outside the training classes."
+            )
+
+
+# ==========================================
+# FOOTER
+# ==========================================
 
 st.divider()
 
 st.caption(
     "Plant Disease Detection | MobileNetV2 | "
-    "PlantVillage | 38 Classes"
-  )
+    "PlantVillage Dataset | 38 Classes"
+)
