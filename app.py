@@ -28,7 +28,7 @@ st.write(
 @st.cache_resource
 def load_model():
     return tf.keras.models.load_model(
-        "plant_disease_model.keras",
+        "plant_disease_model (2).keras",
         compile=False
     )
 
